@@ -37,40 +37,86 @@ import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Warmup;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
 import java.util.concurrent.ThreadLocalRandom;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 @Fork(value = 1, jvmArgsPrepend = {"-Xmx1g", "-Xms1g"})
 @Warmup(iterations = 1, time = 2)
-@Measurement(iterations = 1, time = 2)
+@Measurement(iterations = 5, time = 2)
 public class MyBenchmark {
-    private final static int LOOP = 100000;
+    private static final int LOOP = 100000;
+    private static final Flux<Integer> RANGE = Flux.range(0, LOOP);
+    private static final Scheduler S1 = Schedulers.newSingle("s1");
+    private static final Scheduler S2 = Schedulers.newSingle("s2");
+    private static final Scheduler S3 = Schedulers.newSingle("s3");
 
     @Benchmark
     public void testDefaultParallelScheduler() {
         ThreadLocalRandom rnd = ThreadLocalRandom.current();
-        Flux.range(0, LOOP)
-                .timeout(Duration.ofMillis(rnd.nextInt(100, 10000)), Mono.just(-1))
-                .collectList()
-                .as(StepVerifier::create)
-                .expectNextMatches(it -> !it.get(0).equals(-1))
-                .expectComplete()
-                .verify(Duration.ofSeconds(1));
+        RANGE.timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1))
+             .collectList()
+             .as(StepVerifier::create)
+             .assertNext(list -> assertThat(list).noneMatch(i -> i == -1))
+             .expectComplete()
+             .verify(Duration.ofSeconds(1));
     }
 
     @Benchmark
-    public void testSingleScheduler() throws Exception {
+    public void testDefaultParallelSchedulerWith2Publishers() {
         ThreadLocalRandom rnd = ThreadLocalRandom.current();
-        Flux.range(0, LOOP)
-                .timeout(Duration.ofMillis(rnd.nextInt(100, 10000)), Mono.just(-1), Schedulers.single())
-                .collectList()
-                .as(StepVerifier::create)
-                .expectNextMatches(it -> !it.get(0).equals(-1))
-                .expectComplete()
-                .verify(Duration.ofSeconds(1));
+        Flux.merge(
+                RANGE.take(LOOP / 3)
+                     .publishOn(S1)
+                     .timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1)),
+                RANGE.take(LOOP / 3)
+                     .publishOn(S2)
+                     .timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1)),
+                RANGE.take(LOOP / 3)
+                     .publishOn(S3)
+                     .timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1))
+            )
+            .collectList()
+            .as(StepVerifier::create)
+            .assertNext(list -> assertThat(list).noneMatch(i -> i == -1))
+            .expectComplete()
+            .verify(Duration.ofSeconds(1));
     }
 
+    @Benchmark
+    public void testSingleScheduler() {
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        RANGE.timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1), Schedulers.single())
+             .collectList()
+             .as(StepVerifier::create)
+             .assertNext(list -> assertThat(list).noneMatch(i -> i == -1))
+             .expectComplete()
+             .verify(Duration.ofSeconds(1));
+    }
+
+    @Benchmark
+    public void testSingleSchedulerWith2Publishers() {
+        ThreadLocalRandom rnd = ThreadLocalRandom.current();
+        Flux.merge(
+                RANGE.take(LOOP / 3)
+                     .publishOn(S1)
+                     .timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1), Schedulers.single()),
+                RANGE.take(LOOP / 3)
+                     .publishOn(S2)
+                     .timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1), Schedulers.single()),
+                RANGE.take(LOOP / 3)
+                     .publishOn(S3)
+                     .timeout(Duration.ofMillis(rnd.nextInt(50, 100)), Mono.just(-1), Schedulers.single())
+            )
+            .collectList()
+            .as(StepVerifier::create)
+            .assertNext(list -> assertThat(list).noneMatch(i -> i == -1))
+            .expectComplete()
+            .verify(Duration.ofSeconds(1));
+    }
 }
